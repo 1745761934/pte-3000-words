@@ -531,7 +531,7 @@ body.dark #modal{background:rgba(0,0,0,.6)}
         <option value="1">① 前 1000（最优先）</option>
         <option value="2">② 1001–2000</option>
         <option value="3">③ 2001–3000</option>
-        <option value="0">全部 3159 词</option>
+        <option value="0">全部词</option>
       </select>
     </div>
     <div class="set">
@@ -547,27 +547,27 @@ body.dark #modal{background:rgba(0,0,0,.6)}
     </div>
     <div class="set">
       <div><label>显示单词时自动朗读</label></div>
-      <button class="sw on" id="setAuto"></button>
+      <button class="sw on" id="setAuto" aria-label="显示单词时自动朗读" aria-pressed="true"></button>
     </div>
     <div class="set">
       <div><label>拼写测验只测已学过的词</label><div class="d">关掉则会随机抽全部词</div></div>
-      <button class="sw on" id="setSpellLearned"></button>
+      <button class="sw on" id="setSpellLearned" aria-label="拼写测验只测已学过的词" aria-pressed="true"></button>
     </div>
     <div class="set">
       <div><label>深色模式</label><div class="d">晚上背单词不刺眼</div></div>
-      <button class="sw" id="setDark"></button>
+      <button class="sw" id="setDark" aria-label="深色模式" aria-pressed="false"></button>
     </div>
     <div class="set">
       <div><label>点「认识」后要求默写验证</label><div class="d">遮住单词让你写一遍，写对才算真会，写错按「不认识」记</div></div>
-      <button class="sw on" id="setVerify"></button>
+      <button class="sw on" id="setVerify" aria-label="点认识后要求默写验证" aria-pressed="true"></button>
     </div>
     <div class="set">
       <div><label>学习时加入「看中文默写」</label><div class="d">显示释义后多一步拼写自测，错了立刻纠正</div></div>
-      <button class="sw on" id="setRecall"></button>
+      <button class="sw on" id="setRecall" aria-label="学习时加入看中文默写" aria-pressed="true"></button>
     </div>
     <div class="set">
       <div><label>例句默认显示中文</label><div class="d">关掉则先隐藏，点「显示中文翻译」再看</div></div>
-      <button class="sw on" id="setExZh"></button>
+      <button class="sw on" id="setExZh" aria-label="例句默认显示中文" aria-pressed="true"></button>
     </div>
     <div class="row" style="margin-top:16px">
       <button class="btn" id="btnExport">导出进度</button>
@@ -591,20 +591,28 @@ const LAZY = true;
 const VOCAB=[], MINI={}, EX={}, X={}, COL={};
 let ROOTS=[];
 const LOADED=new Set();
+const LOADING=new Map();
 const STAGE_FILES={1:'data/s1.json',2:'data/s2.json',3:'data/s3.json'};
+const DATA_VERSION='2026-09-30.1';
 async function loadStage(n){
   if(LOADED.has(n))return;
-  if(LAZY){
-    const res=await fetch(STAGE_FILES[n],{cache:'force-cache'});
-    if(!res.ok)throw new Error('stage '+n+' 加载失败');
-    const d=await res.json();
-    VOCAB.push(...d.v);
-    Object.assign(MINI,d.m||{}); Object.assign(EX,d.e||{});
-    Object.assign(X,d.x||{});    Object.assign(COL,d.c||{});
-    if(d.r&&d.r.length)ROOTS=d.r;
-    VOCAB.sort((a,b)=>a.r-b.r);
-  }
-  LOADED.add(n);
+  if(LOADING.has(n))return LOADING.get(n);
+  const task=(async()=>{
+    try{
+      if(LAZY){
+        const res=await fetch(STAGE_FILES[n]+'?v='+DATA_VERSION,{cache:'force-cache'});
+        if(!res.ok)throw new Error('stage '+n+' 加载失败');
+        const d=await res.json();
+        VOCAB.push(...d.v);
+        Object.assign(MINI,d.m||{}); Object.assign(EX,d.e||{});
+        Object.assign(X,d.x||{});    Object.assign(COL,d.c||{});
+        if(d.r&&d.r.length)ROOTS=d.r;
+        VOCAB.sort((a,b)=>a.r-b.r);
+      }
+      LOADED.add(n);
+    }finally{LOADING.delete(n)}
+  })();
+  LOADING.set(n,task);return task;
 }
 function needStages(){ return (typeof S!=='undefined'&&S.stage===0)?[1,2,3]:[(typeof S!=='undefined'&&S.stage)||1]; }
 async function ensureStages(){ for(const n of needStages())await loadStage(n); }
@@ -616,32 +624,89 @@ async function ensureRoots(){ if(!ROOTS.length)await loadStage(1); }
 /* ================= state ================= */
 const KEY='vocab3000_v2';
 const DEFAULTS={newPerDay:15,revCap:0,stage:1,acc:'en-US',auto:true,spellLearned:true,
-                rate:.9,voiceURI:'',today:'',todayNew:0,streak:0,last:'',days:{},
+                rate:.9,voiceURI:'',today:'',todayNew:0,streak:0,last:'',lastActive:'',days:{},
                 unk:{},unkSpell:0,exZh:1,recall:0,verify:1,wrong:{},todayRev:0,wrongSpell:0};
 const num=v=>{const n=Number(v);return isFinite(n)?n:0};
-let S=JSON.parse(localStorage.getItem(KEY)||'null')||{};
+const plain=v=>v&&typeof v==='object'&&!Array.isArray(v);
+const safeKey=k=>{k=String(k);return k.length>0&&k.length<=160&&k!=='__proto__'&&k!=='constructor'&&k!=='prototype'};
+const intIn=(v,min,max,def=0)=>{const n=Math.floor(Number(v));return Number.isFinite(n)?Math.min(max,Math.max(min,n)):def};
+const timeIn=(v,def=0)=>{const n=Number(v);return Number.isFinite(n)&&n>=0&&n<=8640000000000000?n:def};
+function cleanDays(raw){
+  const out={};if(!plain(raw))return out;
+  Object.keys(raw).slice(0,4000).forEach(k=>{if(/^\d{4}-\d{2}-\d{2}$/.test(k)&&safeKey(k))out[k]=intIn(raw[k],0,1000000,0)});return out;
+}
+function cleanProgress(raw){
+  const out={};if(!plain(raw))return out;
+  Object.keys(raw).slice(0,10000).forEach(k=>{
+    if(!safeKey(k)||!plain(raw[k]))return;const r=raw[k];
+    out[k]={iv:intIn(r.iv,0,3650,0),ease:Number.isFinite(Number(r.ease))?Math.min(3,Math.max(1.3,Number(r.ease))):2,
+      due:timeIn(r.due,0),reps:intIn(r.reps,0,100000,0),lapse:intIn(r.lapse,0,100000,0),seen:r.seen?1:0,star:r.star?1:0};
+  });return out;
+}
+function cleanUnknown(raw){
+  const out={};if(!plain(raw))return out;
+  Object.keys(raw).slice(0,10000).forEach(k=>{if(!safeKey(k)||!plain(raw[k]))return;const r=raw[k];out[k]={c:String(r.c||'').slice(0,2000),t:timeIn(r.t,0)}});return out;
+}
+function cleanWrong(raw){
+  const out={};if(!plain(raw))return out;
+  Object.keys(raw).slice(0,10000).forEach(k=>{if(!safeKey(k)||!plain(raw[k]))return;const r=raw[k];out[k]={n:intIn(r.n,0,100000,0),t:timeIn(r.t,0)}});return out;
+}
+function normalizeState(raw){
+  const o=plain(raw)?raw:{};
+  const s=Object.assign({},DEFAULTS);
+  Object.keys(DEFAULTS).concat(['prog','dark']).forEach(k=>{if(Object.prototype.hasOwnProperty.call(o,k))s[k]=o[k]});
+  s.stage=[0,1,2,3].includes(Number(s.stage))?Number(s.stage):1;
+  s.newPerDay=Math.min(200,Math.max(5,num(s.newPerDay)))||15;
+  s.revCap=Math.min(500,Math.max(0,num(s.revCap)));
+  s.rate=Math.min(1.2,Math.max(.6,num(s.rate)))||.9;
+  s.today=/^\d{4}-\d{2}-\d{2}$/.test(String(s.today||''))?String(s.today):'';
+  s.last=/^\d{4}-\d{2}-\d{2}$/.test(String(s.last||''))?String(s.last):'';
+  s.lastActive=/^\d{4}-\d{2}-\d{2}$/.test(String(s.lastActive||''))?String(s.lastActive):'';
+  if(!s.lastActive&&s.last)s.lastActive=s.last;
+  s.todayNew=intIn(s.todayNew,0,100000,0);s.todayRev=intIn(s.todayRev,0,100000,0);s.streak=intIn(s.streak,0,100000,0);
+  s.days=cleanDays(s.days);s.unk=cleanUnknown(s.unk);s.wrong=cleanWrong(s.wrong);s.prog=cleanProgress(s.prog);
+  s.voiceURI=typeof s.voiceURI==='string'?s.voiceURI.slice(0,300):'';
+  ['auto','spellLearned'].forEach(k=>{s[k]=typeof s[k]==='boolean'?s[k]:s[k]===0?false:s[k]===1?true:DEFAULTS[k]});
+  ['exZh','recall','verify','unkSpell','wrongSpell','dark'].forEach(k=>{if(s[k]!==0&&s[k]!==1)s[k]=DEFAULTS[k]===undefined?0:DEFAULTS[k]});
+  return s;
+}
+let S={};
+let rawState='';
+try{rawState=localStorage.getItem(KEY)||'';S=normalizeState(rawState?JSON.parse(rawState):null)}
+catch(e){
+  console.warn('进度数据损坏，已恢复为空白进度，原始数据已保留',e);S=normalizeState(null);
+  try{if(rawState)localStorage.setItem(KEY+'.corrupt.'+Date.now(),rawState.slice(0,2000000))}catch(_){/* storage unavailable or full */}
+}
 Object.keys(DEFAULTS).forEach(k=>{if(S[k]===undefined)S[k]=DEFAULTS[k]});
 // 每个词的学习记录
 let P=S.prog||{};
-const save=()=>{S.prog=P;localStorage.setItem(KEY,JSON.stringify(S))};
+const save=()=>{S.prog=P;try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){console.warn('进度保存失败',e);if(typeof toast==='function')toast('进度保存失败，请导出备份',1800)}};
 const todayStr=()=>new Date().toLocaleDateString('sv');
 function rollDay(){
   const t=todayStr();
   if(S.today!==t){
-    if(S.last===new Date(Date.now()-864e5).toLocaleDateString('sv')) S.streak=(S.streak||0)+1;
-    else if(S.last!==t) S.streak=1;
-    S.today=t;S.todayNew=0;S.todayRev=0;S.last=t;
+    S.today=t;S.todayNew=0;S.todayRev=0;
     if(!S.days[t])S.days[t]=0;
     save();
   }
 }
 rollDay();
-const bumpToday=n=>{S.days[todayStr()]=(S.days[todayStr()]||0)+n;save()};
+const bumpToday=n=>{
+  const t=todayStr();if(S.today!==t)rollDay();
+  S.days[t]=(S.days[t]||0)+n;
+  if(S.lastActive!==t){
+    const prev=new Date(Date.now()-864e5).toLocaleDateString('sv');
+    S.streak=S.lastActive===prev?(S.streak||0)+1:1;S.lastActive=t;
+  }
+  save();
+};
+setInterval(()=>{const before=S.today;rollDay();if(before!==S.today)refreshTop()},60000);
 
 /* ================= utils ================= */
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const rnd=a=>a[Math.floor(Math.random()*a.length)];
+const normalizeAnswer=v=>String(v||'').toLowerCase().replace(/[^a-z0-9']/g,'');
 const inStage=()=>VOCAB.filter(v=>S.stage==0||v.b==S.stage);
 
 function rec(w){
@@ -673,8 +738,7 @@ const FEMALE=/\b(zira|aria|samantha|karen|libby|susan|linda|nancy|jenny|serena|a
 function loadVoices(){
   if(!('speechSynthesis' in window))return;
   const all=(window.speechSynthesis.getVoices()||[]);
-  const en=all.filter(v=>/^en/i.test(v.lang||''));
-  VOICES=en.length?en:all;
+  VOICES=all.filter(v=>/^en/i.test(v.lang||''));
   VOICES.sort((a,b)=>{
     const ga=/google/i.test(a.name)?0:/microsoft/i.test(a.name)?1:2;
     const gb=/google/i.test(b.name)?0:/microsoft/i.test(b.name)?1:2;
@@ -696,7 +760,9 @@ function pickDefaultVoice(){
   return (g||src[0]).voiceURI;
 }
 function fillVoiceSel(){
-  const sel=$('#setVoice');if(!sel||!VOICES.length)return;
+  const sel=$('#setVoice');if(!sel)return;
+  if(!VOICES.length){sel.innerHTML='<option value="">未检测到英文语音</option>';sel.disabled=true;return}
+  sel.disabled=false;
   sel.innerHTML=VOICES.map((v,i)=>
     `<option value="${i}">${esc(v.name)}${/GB|UK|British/i.test(v.lang+v.name)?' · 英':' · 美'}${MALE.test(v.name)?' · 男':FEMALE.test(v.name)?' · 女':''}</option>`).join('');
   let idx=VOICES.findIndex(v=>v.voiceURI===S.voiceURI);
@@ -716,6 +782,7 @@ if('speechSynthesis' in window){
 
 function speak(txt,rate,onend){
   if(!('speechSynthesis' in window)){if(onend)onend();return}
+  if(!VOICES.length){loadVoices();if(!VOICES.length){toast('未检测到英文语音，请在系统中安装英文语音',2000);return}}
   speechSynthesis.cancel();
   const u=new SpeechSynthesisUtterance(txt);
   u.lang='en-US';
@@ -727,6 +794,7 @@ function speak(txt,rate,onend){
   }
   if(v){u.voice=v;u.lang=v.lang;}
   if(onend)u.onend=onend;
+  u.onerror=e=>{if(e.error!=='interrupted'&&e.error!=='canceled')toast('英文语音播放失败，请重试',1800)};
   speechSynthesis.speak(u);
 }
 /* 先念单词，念完自动接着念例句 */
@@ -780,12 +848,12 @@ function sentHTML(s,hide){
   }).join('');
 }
 function sentBlock(v,hide,noSpk){
-  if(!v.s)return '';
+  const C=curSent(v),main=C.main;if(!main[0])return '';
   const shown=S.exZh!==0;                       // 默认显示中文，可一键收起自测
-  return '<div class="ex"><div class="ex-en">'+sentHTML(v.s,hide)+
-    (noSpk?'':'<button class="spk" onclick="speak(\''+esc(v.s).replace(/'/g,"\\'")+'\',.85)">▶</button>')+'</div>'+
-    (v.sz?'<button class="exbtn" onclick="toggleEx(this)">'+(shown?'隐藏中文翻译':'显示中文翻译')+'</button>'+
-          '<div class="ex-zh'+(shown?'':' hidden')+'">'+esc(v.sz)+'</div>':'')+'</div>';
+  return '<div class="ex"><div class="ex-en">'+sentHTML(main[0],hide)+
+    (noSpk?'':'<button class="spk" onclick="speak(\''+esc(main[0]).replace(/'/g,"\\'")+'\',.85)">▶</button>')+'</div>'+
+    (main[1]?'<button class="exbtn" onclick="toggleEx(this)">'+(shown?'隐藏中文翻译':'显示中文翻译')+'</button>'+
+          '<div class="ex-zh'+(shown?'':' hidden')+'">'+esc(main[1])+'</div>':'')+'</div>';
 }
 window.toggleEx=function(b){
   const z=b.nextElementSibling;if(!z)return;
@@ -1034,7 +1102,7 @@ function showTab(t){
   if(t==='wrong')renderWrong();
   if(t==='root')renderRoots();
   if(t==='stat')renderStat();
-  if(t==='speak')spkNext(); else flwStop();
+  if(t==='speak')spkNext(); else {spkStopRec(true);flwStop();}
   refreshTop();
 }
 $$('.tab').forEach(b=>b.onclick=()=>{
@@ -1090,7 +1158,7 @@ function cardHTML(v,rev){
 }
 function renderLearn(){
   const box=$('#learnCard');
-  verifyOn=false;holdMode=false;
+  verifyOn=false;verifyToken++;vT=null;window._vOk=null;window._vSkip=null;holdMode=false;
   const nl=newList();
   const done=num(S.todayNew),quota=num(S.newPerDay);
   if(quota>0&&done>=quota&&!backTo){
@@ -1110,11 +1178,17 @@ function renderLearn(){
   if(!target&&!nl.length){
     box.innerHTML=`<div class="empty"><div class="big">🎉</div>
       <div style="font-size:16px;color:var(--ink)">当前阶段已全部学完</div>
-      <div class="tip">${S.stage<3?'可以直接切到下一阶段':'3159 词已全部学完，去复习巩固吧'}</div>
+      <div class="tip">${S.stage<3?'可以直接切到下一阶段':VOCAB.length+' 词已全部学完，去复习巩固吧'}</div>
       ${S.stage<3?`<div class="row" style="justify-content:center;margin-top:14px">
         <button class="btn pri" id="btnNextStage">切到阶段 ${['①','②','③'][S.stage]}</button></div>`:''}</div>`;
     const bn=$('#btnNextStage');
-    if(bn)bn.onclick=()=>{S.stage=S.stage+1;save();$('#setStage').value=S.stage;renderLearn();refreshTop()};
+    if(bn)bn.onclick=async()=>{
+      if(stageAdvancing)return;stageAdvancing=true;
+      S.stage=S.stage+1;save();$('#setStage').value=S.stage;
+      try{await ensureStages();renderLearn();refreshTop()}
+      catch(e){S.stage=Math.max(1,S.stage-1);save();$('#setStage').value=S.stage;toast('数据加载失败：'+(e&&e.message||e))}
+      finally{stageAdvancing=false}
+    };
     refreshTop();return;
   }
   if(!target)target=nl[0];
@@ -1146,16 +1220,20 @@ function reveal(){
   const i=$('#stInput');if(i)setTimeout(()=>i.focus(),60);
 }
 /* 学习卡里的「看中文默写」自测 */
+let recallToken=0;
 function wireRecall(word){
   const inp=$('#stInput');if(!inp)return;
-  inp.onkeydown=e=>{if(e.key==='Enter')checkRecall(word)};
-  const b=$('#stOk');if(b)b.onclick=()=>checkRecall(word);
+  const token=++recallToken;inp.dataset.answered='';
+  inp.onkeydown=e=>{if(e.key==='Enter')checkRecall(word,token)};
+  const b=$('#stOk');if(b)b.onclick=()=>checkRecall(word,token);
 }
-function checkRecall(word){
+function checkRecall(word,token){
   const el=$('#stInput');if(!el)return;
-  const v=el.value.trim().toLowerCase().replace(/\s+/g,'');
+  if(token!==recallToken||el.dataset.answered==='1')return;
+  const v=normalizeAnswer(el.value);
   if(!v)return;
-  const ok=v===word.toLowerCase();
+  el.dataset.answered='1';
+  const ok=v===normalizeAnswer(word);
   el.className=ok?'ok':'no';
   const fb=$('#stFb');
   if(fb){
@@ -1168,9 +1246,11 @@ function checkRecall(word){
   else if(!r.iv){r.iv=1;r.due=Date.now()+864e5;}
   save();
 }
+let stageAdvancing=false;
 function applyGrade(g,hold){
   holdMode=false;
   if(!cur)return;
+  rollDay();
   const r=rec(cur.w);r.seen=1;r.reps++;
   let msg;
   if(g===0){r.iv=0;r.lapse++;r.ease=Math.max(1.3,r.ease-.2);r.due=Date.now()+6e5;msg='不认识 · 10 分钟后再来';}
@@ -1211,10 +1291,11 @@ function grade(g){
   applyGrade(g);
 }
 /* ===== 默写验证：遮住单词，写对才算真会 ===== */
-let verifyOn=false,vT=null;
+let verifyOn=false,vT=null,verifyDone=false,verifyToken=0;
 function startVerify(v,host,onOk,onSkip){
-  verifyOn=true;vT=v;
-  window._vOk=onOk;window._vSkip=onSkip;
+  const token=++verifyToken;verifyOn=true;verifyDone=false;vT=v;
+  window._vOk=()=>{if(token!==verifyToken||vT!==v)return;verifyOn=false;onOk()};
+  window._vSkip=()=>{if(token!==verifyToken||verifyDone||vT!==v)return;verifyOn=false;onSkip()};
   const mask=Array.from(v.w).map(()=>'_').join(' ');
   $(host).innerHTML=
    '<div class="row" style="justify-content:space-between;margin-bottom:12px">'+
@@ -1248,16 +1329,21 @@ function startVerify(v,host,onOk,onSkip){
     hb.textContent=hn>=v.w.length-1?'没有更多提示了':'提示一个字母';
   };
   const sp=$('#vfSpk');if(sp)sp.onclick=()=>speak(v.w);
-  const nx=$('#vfNext');if(nx)nx.onclick=()=>{verifyOn=false;window._vSkip&&window._vSkip()};
+  const nx=$('#vfNext');if(nx)nx.onclick=()=>{window._vSkip&&window._vSkip()};
 }
 function verifyWrong(){
-  if(!vT)return;
+  if(!vT||verifyDone)return;
+  verifyDone=true;
+  if($('#vfOk'))$('#vfOk').disabled=true;if($('#vfNo'))$('#vfNo').disabled=true;
   markWrong(vT.w);
   const r=rec(vT.w);r.seen=1;r.lapse++;r.iv=0;
   r.ease=Math.max(1.3,r.ease-.2);r.due=Date.now()+6e5;
   const inLearn=!$('#t-learn').classList.contains('hidden');
-  if(inLearn)S.todayNew++;                  // 只有学习页才计新词
+  rollDay();
+  if(inLearn){S.todayNew++}                 // 只有学习页才计新词
+  else if(!inLearn&&!$('#t-review').classList.contains('hidden'))S.todayRev++;
   bumpToday(1);save();
+  verifyOn=false;verifyToken++;
   const ans=$('#vfAns');if(ans)ans.classList.remove('hidden');
   const fb=$('#vfFb');
   if(fb){fb.className='fb no';
@@ -1266,15 +1352,19 @@ function verifyWrong(){
 }
 function checkVerify(){
   const el=$('#vfInput');if(!el||!vT)return;
-  const v=el.value.trim().toLowerCase().replace(/\s+/g,'');
+  if(verifyDone)return;
+  const v=normalizeAnswer(el.value);
   if(!v)return;
-  const ok=v===vT.w.toLowerCase();
+  const ok=v===normalizeAnswer(vT.w);
   el.className=ok?'ok':'no';
   if(ok){
+    verifyDone=true;
+    if($('#vfOk'))$('#vfOk').disabled=true;if($('#vfNo'))$('#vfNo').disabled=true;
     const fb=$('#vfFb');if(fb){fb.className='fb ok';fb.innerHTML='✓ 真的会了，拼写也没问题'}
     toast('✓ 默写正确',900);speak(vT.w);
+    const token=verifyToken;
     verifyOn=false;
-    setTimeout(()=>window._vOk&&window._vOk(),560);
+    setTimeout(()=>{if(token===verifyToken&&vT){window._vOk&&window._vOk()}},560);
   }else{
     verifyWrong();
   }
@@ -1315,7 +1405,7 @@ function renderReview(){
     if(g===0){r.iv=0;r.lapse++;r.ease=Math.max(1.3,r.ease-.2);r.due=Date.now()+6e5;}
     else if(g===1){r.iv=Math.max(1,Math.round(r.iv*r.ease*.6));r.due=Date.now()+Math.max(1,r.iv)*864e5;}
     else{r.iv=r.iv===0?1:Math.round(r.iv*r.ease);r.ease=Math.min(2.3,r.ease+.1);r.due=Date.now()+Math.max(1,r.iv)*864e5;}
-    S.todayRev=num(S.todayRev)+1;bumpToday(1);save();renderReview();refreshTop();
+    rollDay();S.todayRev=num(S.todayRev)+1;bumpToday(1);save();renderReview();refreshTop();
   }
   $$('#reviewCard .grade').forEach(b=>b.onclick=()=>{
     const g=+b.dataset.g;
@@ -1329,7 +1419,7 @@ function renderReview(){
 }
 
 /* ================= spell ================= */
-let sq=null,spellPool=[];
+let sq=null,spellPool=[],spellAnswered=false,spellToken=0;
 function startSpell(){
   let src;
   if(S.wrongSpell&&Object.keys(S.wrong||{}).length){
@@ -1345,6 +1435,7 @@ function startSpell(){
   nextSpell();
 }
 function nextSpell(){
+  spellToken++;spellAnswered=false;
   sq=rnd(spellPool);
   const hint=sq.w[0]+' _'.repeat(Math.max(1,sq.w.length-1));
   window.exitUnkMode=()=>{S.unkSpell=0;save();startSpell()};
@@ -1379,6 +1470,9 @@ function nextSpell(){
   $('#spSkip').onclick=nextSpell;
 }
 function showAns(ok){
+  if(spellAnswered)return;
+  spellAnswered=true;
+  if($('#spOk'))$('#spOk').disabled=true;if($('#spShow'))$('#spShow').disabled=true;
   if(!ok&&sq)markWrong(sq.w);
   $('#spAns').classList.remove('hidden');
   if(!ok){ // 答错时直接展开例句翻译，省得再点一次
@@ -1397,23 +1491,26 @@ function showAns(ok){
 }
 function checkSpell(){
   const el=$('#spellInput');if(!el)return;
-  const v=el.value.trim().toLowerCase().replace(/\s+/g,'');
+  if(spellAnswered)return;
+  const v=normalizeAnswer(el.value);
   if(!v)return;
-  const ok=v===sq.w.toLowerCase();
+  const ok=v===normalizeAnswer(sq.w);
   el.className=ok?'ok':'no';
   if(ok){                                   // 拼对立刻跳下一词
+    spellAnswered=true;
+    if($('#spOk'))$('#spOk').disabled=true;if($('#spShow'))$('#spShow').disabled=true;
     const r=rec(sq.w);r.seen=1;r.reps++;
     r.iv=r.iv===0?1:Math.round(r.iv*r.ease);r.ease=Math.min(2.3,r.ease+.1);
     r.due=Date.now()+Math.max(1,r.iv)*864e5;
     bumpToday(1);save();speak(sq.w);toast('✓ 正确  '+sq.w,900);
-    setTimeout(nextSpell,620);
+    const token=spellToken;setTimeout(()=>{if(token===spellToken)nextSpell()},620);
   }else{
     showAns(false);
   }
 }
 
 /* ================= 句子拼写（PTE Write From Dictation） ================= */
-let spMode='word', snMode='zh', snHint='none', sq2=null;
+let spMode='word', snMode='zh', snHint='none', sq2=null, sentenceAnswered=false;
 $$('.mdBtn').forEach(b=>b.onclick=()=>{
   $$('.mdBtn').forEach(x=>x.classList.remove('on'));b.classList.add('on');
   spMode=b.dataset.m;
@@ -1423,6 +1520,7 @@ function startSpellOrSent(){ if(spMode==='sent')nextSentence(); else startSpell(
 
 const MAXW={1:11,2:15,3:22};
 function nextSentence(){
+  sentenceAnswered=false;buildAnswered=false;
   const cap=MAXW[S.stage||1]||22;
   let pool=inStage().filter(v=>v.s&&v.sz&&v.s.split(/\s+/).length<=cap);
   if(pool.length<5)pool=inStage().filter(v=>v.s&&v.sz);
@@ -1462,7 +1560,7 @@ function nextSentence(){
   inp.onkeydown=e=>{if(e.key==='Enter')checkSentence()};
   $('#snOk').onclick=checkSentence;
   $('#snSkip').onclick=nextSentence;
-  $('#snShow').onclick=()=>showSentence(null);
+  $('#snShow').onclick=()=>showSentence(null,0,0,'',false);
   const p2=$('#snPlay2');if(p2)p2.onclick=()=>speak(sq2.s,.8);
   $$('.snMode').forEach(b=>b.onclick=()=>{
     snMode=b.dataset.s;nextSentence();
@@ -1475,7 +1573,7 @@ function nextSentence(){
   }
 }
 /* ---- 选词组句：词块打乱，按序点出完整句子 ---- */
-let buildPool=[],buildAns=[],buildN=0;
+let buildPool=[],buildAns=[],buildN=0,buildAnswered=false;
 function renderBuild(){
   if(!buildPool.length&&!buildAns.length){
     const ws=sq2.s.replace(/[.!?]+$/,'').split(/\s+/);
@@ -1505,6 +1603,7 @@ function renderBuild(){
     '</div>'+
     '<div id="bdRes" class="hidden" style="margin-top:14px"></div>';
   $$('#spellCard .chip').forEach(b=>b.onclick=()=>{
+    if(buildAnswered)return;
     const i=+b.dataset.i,z=b.dataset.z;
     if(z==='p'){const k=buildPool.findIndex(o=>o.i===i);if(k>=0){buildAns.push(buildPool[k]);buildPool.splice(k,1)}}
     else{const k=buildAns.findIndex(o=>o.i===i);if(k>=0){buildPool.push(buildAns[k]);buildAns.splice(k,1)}}
@@ -1513,17 +1612,21 @@ function renderBuild(){
   $$('#spellCard .snMode').forEach(b=>b.onclick=()=>{snMode=b.dataset.s;nextSentence()});
   $('#bdOk').onclick=buildCheck;
   $('#bdTip').onclick=buildTip;
-  $('#bdClear').onclick=()=>{buildPool=buildPool.concat(buildAns);buildAns=[];renderBuild()};
+  $('#bdClear').onclick=()=>{if(buildAnswered)return;buildPool=buildPool.concat(buildAns);buildAns=[];renderBuild()};
   $('#bdPlay').onclick=()=>speak(sq2.s,.8);
   $('#bdSkip').onclick=nextSentence;
 }
 function buildTip(){
+  if(buildAnswered)return;
   let need=0;while(buildAns.some(o=>o.i===need))need++;
   const k=buildPool.findIndex(o=>o.i===need);
   if(k>=0){buildAns.push(buildPool[k]);buildPool.splice(k,1);renderBuild()}
   else toast('没有可提示的词了');
 }
 function buildCheck(){
+  if(buildAnswered)return;
+  buildAnswered=true;
+  if($('#bdOk'))$('#bdOk').disabled=true;
   const ok=buildAns.length===buildN&&buildAns.every((o,ix)=>o.i===ix);
   const box=$('#bdRes');box.classList.remove('hidden');
   if(ok){
@@ -1545,7 +1648,7 @@ function buildCheck(){
         '<button class="btn pri sm" id="bdRetry">重排这句</button>'+
         '<button class="btn sm" id="bdNext2">下一句</button></div>';
     $('#bdNoPlay').onclick=()=>speak(sq2.s,.8);
-    $('#bdRetry').onclick=()=>{buildPool=buildPool.concat(buildAns);buildAns=[];renderBuild()};
+    $('#bdRetry').onclick=()=>{buildAnswered=false;buildPool=buildPool.concat(buildAns);buildAns=[];renderBuild()};
     $('#bdNext2').onclick=nextSentence;
     markWrong(sq2.w);save();speak(sq2.s,.8);
   }
@@ -1576,7 +1679,10 @@ function checkSentence(){
   const okN=d.filter(x=>x.t==='ok').length;
   showSentence(d,okN,B.length,el.value);
 }
-function showSentence(d,okN,totN,typed){
+function showSentence(d,okN,totN,typed,scored=true){
+  if(sentenceAnswered)return;
+  sentenceAnswered=true;
+  if($('#snOk'))$('#snOk').disabled=true;if($('#snShow'))$('#snShow').disabled=true;
   if(!sq2)return;
   const B=normWords(sq2.s);
   if(!d){d=B.map(w=>({t:'ok',w}));okN=B.length;totN=B.length}
@@ -1584,7 +1690,7 @@ function showSentence(d,okN,totN,typed){
   $('#snRes').classList.remove('hidden');
   $('#snRes').innerHTML=
     '<div style="font-size:16px;font-weight:600;'+(pct===100?'color:var(--ok)':'color:var(--ink)')+'">'+
-      (pct===100?'✓ 完全正确':okN+' / '+totN+' 词正确（'+pct+'%）')+'</div>'+
+      (!scored?'标准答案（未计分）':pct===100?'✓ 完全正确':okN+' / '+totN+' 词正确（'+pct+'%）')+'</div>'+
     '<div style="margin-top:10px;line-height:2.1">'+d.map(x=>
       '<span class="dw '+x.t+'">'+esc(x.w)+'</span>').join('')+'</div>'+
     '<div class="tip" style="margin-top:8px">'+
@@ -1600,10 +1706,12 @@ function showSentence(d,okN,totN,typed){
     '</div>';
   $('#snAnsPlay').onclick=()=>speak(sq2.s,.8);
   $('#snAgain').onclick=nextSentence;
-  $('#snRetry').onclick=()=>{const i=$('#snInput');if(i){i.value='';i.focus()}$('#snRes').classList.add('hidden')};
-  bumpToday(1);
-  if(pct===100){toast('✓ 句子全对',1000);speak(sq2.s,.85)}
-  else{markWrong(sq2.w);save();speak(sq2.s,.8)}
+  $('#snRetry').onclick=()=>{sentenceAnswered=false;$('#snOk').disabled=false;$('#snShow').disabled=false;const i=$('#snInput');if(i){i.value='';i.focus()}$('#snRes').classList.add('hidden')};
+  if(scored){
+    bumpToday(1);
+    if(pct===100){toast('✓ 句子全对',1000);speak(sq2.s,.85)}
+    else{markWrong(sq2.w);save();speak(sq2.s,.8)}
+  }else{speak(sq2.s,.8)}
 }
 
 /* ================= quiz ================= */
@@ -1771,6 +1879,9 @@ function extraBlock(w){
 */
 let spkMode='ra', spkCur=null, spkReveal=false;
 let recStream=null, recObj=null, recChunks=[], recUrl=null, recTimer=null, recSec=0;
+function releaseRecStream(){
+  if(recStream){recStream.getTracks().forEach(t=>t.stop());recStream=null;}
+}
 
 $$('.spkMode').forEach(b=>b.onclick=()=>{
   $$('.spkMode').forEach(x=>x.classList.remove('on'));b.classList.add('on');
@@ -1834,6 +1945,8 @@ async function spkRec(){
     recObj=new MediaRecorder(recStream);
     recObj.ondataavailable=e=>{if(e.data&&e.data.size)recChunks.push(e.data)};
     recObj.onstop=()=>{
+      clearInterval(recTimer);recTimer=null;releaseRecStream();
+      const btn=$('#spkRecBtn');if(btn){btn.classList.remove('rec-on');btn.textContent='● 重新录音'}
       if(!recChunks.length){toast('没录到声音，检查麦克风');return}
       const blob=new Blob(recChunks,{type:recChunks[0].type||'audio/webm'});
       if(recUrl)URL.revokeObjectURL(recUrl);
@@ -1844,6 +1957,7 @@ async function spkRec(){
       if(b){b.classList.remove('rec-on');b.innerHTML='<span class="spmar" id="spDot" style="display:none"></span>● 重新录音'}
       const t=$('#spkRecTime');if(t)t.textContent='录好了';
       clearInterval(recTimer);
+      releaseRecStream();
       toast('录好了，点「听我的」和示范对比');
     };
     recObj.start();
@@ -1852,12 +1966,14 @@ async function spkRec(){
     const t=$('#spkRecTime');if(t)t.textContent='0s';
     recTimer=setInterval(()=>{recSec++;const e=$('#spkRecTime');if(e)e.textContent=recSec+'s'},1000);
   }catch(e){
+    clearInterval(recTimer);recTimer=null;releaseRecStream();recObj=null;
     toast('拿不到麦克风权限：'+(e&&(e.message||e.name)||'未知错误'));
   }
 }
 window.spkStopRec=function(silent){
   try{if(recObj&&recObj.state==='recording'){recObj.onstop=null;recObj.stop()}}catch(e){}
   clearInterval(recTimer);
+  releaseRecStream();
 };
 window.spkNext=spkNext;
 
@@ -2010,7 +2126,7 @@ function refreshTop(){
   $('#sStreak').textContent=S.streak||0;
   const done=c.learn+c.done,tot=arr.length;
   $('#stageBar').style.width=(done/tot*100)+'%';
-  $('#stageTxt').textContent=`${done} / ${tot}（${S.stage?['①前1000','②1001-2000','③2001-3000'][S.stage-1]:'全部'}）`;
+  $('#stageTxt').textContent=`${done} / ${tot}（${S.stage?['①前1000','②1001-2000','③2001+'][S.stage-1]:'全部'}）`;
   const d=dueList().length,$d=$('#dueDot');
   $d.textContent=d;$d.classList.toggle('hidden',!d);
   const uk=Object.keys(S.unk||{}).length,$u=$('#unkDot');
@@ -2027,9 +2143,10 @@ $('#setSpellLearned').classList.toggle('on',S.spellLearned);
 $('#setNew').onchange=e=>{S.newPerDay=+e.target.value||20;save()};
 $('#setRev').onchange=e=>{S.revCap=+e.target.value||0;save()};
 $('#setStage').onchange=async e=>{
-  S.stage=+e.target.value;save();
-  try{await ensureStages()}catch(x){toast('数据加载失败')}
-  refreshTop();
+  const prev=S.stage;S.stage=+e.target.value;save();e.target.disabled=true;
+  try{await ensureStages();refreshTop();const active=document.querySelector('.tab.on');if(active)showTab(active.dataset.t)}
+  catch(x){S.stage=prev;e.target.value=prev;save();toast('数据加载失败，请重新选择阶段')}
+  finally{e.target.disabled=false}
 };
 $('#setRate').onchange=e=>{S.rate=+e.target.value||.9;save()};
 $('#setVoice').onchange=e=>{
@@ -2038,18 +2155,18 @@ $('#setVoice').onchange=e=>{
 };
 $('#btnTry').onclick=()=>speak('The quick brown fox jumps over the lazy dog',S.rate||.9);
 fillVoiceSel();
-$('#setAuto').onclick=function(){S.auto=!S.auto;this.classList.toggle('on',S.auto);save()};
-$('#setSpellLearned').onclick=function(){S.spellLearned=!S.spellLearned;this.classList.toggle('on',S.spellLearned);save()};
-$('#setDark').classList.toggle('on',S.dark===1);
+$('#setAuto').onclick=function(){S.auto=!S.auto;this.classList.toggle('on',S.auto);this.setAttribute('aria-pressed',String(S.auto));save()};
+$('#setSpellLearned').onclick=function(){S.spellLearned=!S.spellLearned;this.classList.toggle('on',S.spellLearned);this.setAttribute('aria-pressed',String(S.spellLearned));save()};
+$('#setDark').classList.toggle('on',S.dark===1);$('#setDark').setAttribute('aria-pressed',String(S.dark===1));
 $('#setDark').onclick=function(){S.dark=S.dark===1?0:1;this.classList.toggle('on',S.dark===1);
-  document.body.classList.toggle('dark',S.dark===1);save()};
+  this.setAttribute('aria-pressed',String(S.dark===1));document.body.classList.toggle('dark',S.dark===1);save()};
 if(S.dark===1)document.body.classList.add('dark');
-$('#setVerify').classList.toggle('on',S.verify!==0);
-$('#setVerify').onclick=function(){S.verify=S.verify===0?1:0;this.classList.toggle('on',S.verify!==0);save()};
-$('#setRecall').classList.toggle('on',S.recall!==0);
-$('#setRecall').onclick=function(){S.recall=S.recall===0?1:0;this.classList.toggle('on',S.recall!==0);save()};
-$('#setExZh').classList.toggle('on',S.exZh!==0);
-$('#setExZh').onclick=function(){S.exZh=S.exZh===0?1:0;this.classList.toggle('on',S.exZh!==0);save()};
+$('#setVerify').classList.toggle('on',S.verify!==0);$('#setVerify').setAttribute('aria-pressed',String(S.verify!==0));
+$('#setVerify').onclick=function(){S.verify=S.verify===0?1:0;this.classList.toggle('on',S.verify!==0);this.setAttribute('aria-pressed',String(S.verify!==0));save()};
+$('#setRecall').classList.toggle('on',S.recall!==0);$('#setRecall').setAttribute('aria-pressed',String(S.recall!==0));
+$('#setRecall').onclick=function(){S.recall=S.recall===0?1:0;this.classList.toggle('on',S.recall!==0);this.setAttribute('aria-pressed',String(S.recall!==0));save()};
+$('#setExZh').classList.toggle('on',S.exZh!==0);$('#setExZh').setAttribute('aria-pressed',String(S.exZh!==0));
+$('#setExZh').onclick=function(){S.exZh=S.exZh===0?1:0;this.classList.toggle('on',S.exZh!==0);this.setAttribute('aria-pressed',String(S.exZh!==0));save()};
 $('#btnResetToday').onclick=()=>{S.todayNew=0;save();renderLearn()};
 $('#btnStart').onclick=()=>{
   $$('.tab').forEach(x=>x.classList.remove('on'));
@@ -2070,8 +2187,7 @@ $('#fileIn').onchange=e=>{
   const rd=new FileReader();
   rd.onload=()=>{try{
     const o=JSON.parse(rd.result)||{};
-    S=Object.assign({},DEFAULTS,o);          // 缺字段用默认值补齐，避免 undefined
-    ['unk','wrong','days'].forEach(k=>{if(!S[k]||typeof S[k]!=='object')S[k]={}});
+    S=normalizeState(o);
     P=S.prog||{};save();location.reload();
   }catch(x){alert('文件格式不对')}};
   rd.readAsText(f);
